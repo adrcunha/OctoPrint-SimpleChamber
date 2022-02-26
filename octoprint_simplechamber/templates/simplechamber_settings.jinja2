@@ -1,0 +1,44 @@
+<form class="form-horizontal">
+
+	<h3>{{ _('Simple Chamber Configuration') }}</h3>
+
+	<div class="control-group">
+		<div class="controls" title="{{ _('Uncheck to disable the fan completely.') }}">
+			<label class="checkbox">
+				<input type="checkbox" data-bind="checked: settings.plugins.simplechamber.fan_enabled">{{ _('Fan enabled') }}
+			</label>
+		</div>
+	</div>
+
+	<div class="control-group" title="{{ _('When chamber temperature reaches this value the fan will turn on.') }}">
+		<label class="control-label">{{ _('Maximum chamber temperature (°C)') }}</label>
+		<div class="controls">
+			<input type="text" class="input-block-level" data-bind="value: settings.plugins.simplechamber.max_temp">
+		</div>
+	</div>
+
+	<div class="control-group" title="{{ _('Type of DHT sensor connected.') }}">
+		<label class="control-label">{{ _('Temperature sensor') }}</label>
+		<div class="controls">
+			<select data-bind="value: settings.plugins.simplechamber.sensor_type">
+				<option value="11">DHT11</option>
+				<option value="22">DHT22</option>
+			</select>
+		</div>
+	</div>
+
+	<div class="control-group" title="{{ _('The physical GPIO pin (1-40) the DHT sensor is connected to.') }}">
+		<label class="control-label">{{ _('DHT sensor GPIO pin') }}</label>
+		<div class="controls">
+			<input type="text" class="input-block-level" data-bind="value: settings.plugins.simplechamber.sensor_pin">
+		</div>
+	</div>
+
+	<div class="control-group" title="{{ _('The physical GPIO pin (1-40) the fan is connected to.') }}">
+		<label class="control-label">{{ _('Fan GPIO pin') }}</label>
+		<div class="controls">
+			<input type="text" class="input-block-level" data-bind="value: settings.plugins.simplechamber.fan_pin">
+		</div>
+	</div>
+	
+</form>
