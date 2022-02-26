@@ -33,7 +33,7 @@ plugin_url = "https://github.com/adrcunha/OctoPrint-SimpleChamber"
 plugin_license = "AGPLv3"
 
 # Any additional requirements besides OctoPrint should be listed here
-plugin_requires = ["Adafruit_DHT"]
+plugin_requires = ["RPi.GPIO", "Adafruit_DHT"]
 
 ### --------------------------------------------------------------------------------------------------------------------
 ### More advanced options that you usually shouldn't have to touch follow after this point

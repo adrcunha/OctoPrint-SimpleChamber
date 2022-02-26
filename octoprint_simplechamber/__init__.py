@@ -78,7 +78,7 @@ class SimpleChamber(octoprint.plugin.StartupPlugin,
 		self.pwm.start(0)
 
 		self.platform = Adafruit_DHT.common.get_platform() # Only do it once for speed sake.
-		# Be on the safe side, Only sample DHTXX every 2 seconds.
+		# DHTXX sensors are slow, sample every 2 seconds (DHT11 can be sampled every 1.5s)
 		octoprint.util.RepeatedTimer(2.0, self.perform_tasks).start()
 
 		self._logger.info("Simple Chamber started: sensor=%s, fan=%s" % (self._settings.get(["sensor_pin"]), fan_pin))
@@ -91,7 +91,7 @@ class SimpleChamber(octoprint.plugin.StartupPlugin,
 				displayVersion = self._plugin_version,
 				type = "github_release",
 				user = "adrcunha",
-				repo = "OctoPrint-SimplChamber",
+				repo = "OctoPrint-SimpleChamber",
 				current = self._plugin_version,
 				pip = "https://github.com/adrcunha/OctoPrint-SimpleChamber/archive/{target_version}.zip",
 				dependency_links = False
