@@ -3,10 +3,18 @@ from __future__ import absolute_import
 import octoprint.plugin
 import octoprint.util
 import copy
+import os
 import time
-import Adafruit_DHT
 import RPi.GPIO as GPIO
 from octoprint.events import Events
+
+try:
+	import adafruit_dht
+except ImportError:
+	pass
+
+DHT_DRIVER_DTOVERLAY = 'dtoverlay'
+DHT_DRIVER_ADAFRUIT_DHT = 'adafruit_dht'
 
 
 class SimpleChamber(octoprint.plugin.StartupPlugin,
@@ -16,16 +24,18 @@ class SimpleChamber(octoprint.plugin.StartupPlugin,
 		    octoprint.plugin.EventHandlerPlugin,
 		   ):
 
-	platform = None
+	sensor = None
 	last_dht_temp = None
 	pwm = None
 	fan_speed = 0
 	fan_int = 0
 	gpio_board_mode = True
+	max_temp = 0
+	dht_iio_path = None
+	dht_driver = None
 
 
-	def get_pin(self, name):
-		board_pin = int(self._settings.get([name + "_pin"]))
+	def get_gpio_pin(self, board_pin):
 		if self.gpio_board_mode:
 			return board_pin
 		bcm_map = [-1, -1, 2, -1, 3, -1, 4, -1, -1, -1,
@@ -39,8 +49,9 @@ class SimpleChamber(octoprint.plugin.StartupPlugin,
 
 	def get_settings_defaults(self):
 		return dict(
-			fan_enabled=True,
-			max_temp=30,
+			fan_enabled = True,
+			dht_driver = DHT_DRIVER_DTOVERLAY, # DHT_DRIVER_ADAFRUIT_DHT,
+			max_temp = 30,
 			sensor_type = 22,
 			sensor_pin = 23,
 			fan_pin = 19
@@ -57,10 +68,96 @@ class SimpleChamber(octoprint.plugin.StartupPlugin,
 		]
 
 
-	def on_event(self, event, payload):
-		if event == Events.CLIENT_OPENED:
-			self._plugin_manager.send_plugin_message(self._identifier, dict(isFanEnabled=self._settings.get(["fan_enabled"])))
+	def get_dht_iio_path(self):
+		devices_path = '/sys/devices/platform'
+		if not os.path.isdir(devices_path):
+			return None
+		dhts = [f for f in os.listdir(devices_path) if f.startswith('dht11')]
+		if len(dhts) < 1:
+			return None
+		path = '%s/%s/iio:device0' % (devices_path, dhts[0])
+		return path if os.path.isdir(path) else None
+
+
+	def read_dht_iio_value(self, name):
+		if self.dht_iio_path:
+			try:
+				with open('%s/in_%s_input' % (self.dht_iio_path, name), 'r') as f:
+					return float(f.read())/1000.0
+			except Exception as e:
+				pass
+		return None
+
+
+	def setup_hardware(self):
+		self.max_temp = float(self._settings.get(["max_temp"]))
+		self.dht_driver = self._settings.get(["dht_driver"])
+
+		fan_enabled = self._settings.get(["fan_enabled"])
+		fan_pin = self.get_gpio_pin(self._settings.get(["fan_pin"]))
+		sensor_pin = int(self._settings.get(["sensor_pin"]))
+		sensor_type = int(self._settings.get(["sensor_type"]))
+
+		self._logger.info(
+			"Simple Chamber: sensor=DHT%d, pin=%d, fan=%d%s, max=%.2fC (%s)" % (
+				sensor_type,
+				sensor_pin,
+				fan_pin,
+				"" if fan_enabled else " (disabled)",
+				self.max_temp,
+				self.dht_driver))
+
+		if self.pwm:
+			self.pwm.stop()
+		if self.sensor:
+			self.sensor.exit()
+
+		self.pwm = None
+		if fan_enabled:
+			GPIO.setup(fan_pin, GPIO.OUT)
+			self.pwm = GPIO.PWM(fan_pin, 100)
+			self.pwm.start(0)
+
+		self.sensor = None
+		self.dht_iio_path = self.get_dht_iio_path()
+
+		if self.dht_driver == DHT_DRIVER_DTOVERLAY:
+			if not self.dht_iio_path:
+				self._logger.exception("Sensor error: no sensor detected by Device Tree Overlay")
 			return
+
+		if self.dht_driver != DHT_DRIVER_ADAFRUIT_DHT:
+			self._logger.exception("Unknown sensor driver")
+			return
+
+		sensors = {
+			11: adafruit_dht.DHT11,
+			21: adafruit_dht.DHT21,
+			22: adafruit_dht.DHT22
+		}
+		try:
+			self.sensor = sensors[sensor_type](sensor_pin)
+			# If sensor was initialized, try reading a temperature to ensure it's working
+			try:
+				_ = self.sensor.temperature
+			except RuntimeError as e:
+				# adafruit_dht doesn't return an error code, but a runtime exception.
+				# Our only option is to check the content of the exception message.
+				# If it's a retriable error, hardware is probably fine, otherwise log it.
+				if "Try again" in str(e):
+					pass
+				else:
+					raise e
+		except Exception as e:
+			self._logger.exception("Sensor error: %s" % str(e))
+			pass
+
+
+	def on_event(self, event, payload):
+		if event == Events.SETTINGS_UPDATED:
+			self.setup_hardware()
+			return
+
 
 	def on_after_startup(self):
 		# Set GPIO to board numbering, if possible
@@ -72,16 +169,12 @@ class SimpleChamber(octoprint.plugin.StartupPlugin,
 			GPIO.setmode(current_mode)
 			self.gpio_board_mode = False
 
-		fan_pin = self.get_pin("fan")
-		GPIO.setup(fan_pin, GPIO.OUT)
-		self.pwm = GPIO.PWM(fan_pin, 100)
-		self.pwm.start(0)
-
-		self.platform = Adafruit_DHT.common.get_platform() # Only do it once for speed sake.
 		# DHTXX sensors are slow, sample every 2 seconds (DHT11 can be sampled every 1.5s)
 		octoprint.util.RepeatedTimer(2.0, self.perform_tasks).start()
 
-		self._logger.info("Simple Chamber started: sensor=%s, fan=%s" % (self._settings.get(["sensor_pin"]), fan_pin))
+		self.setup_hardware()
+
+		self._logger.info("Simple Chamber started")
 
 
 	def get_update_information(self):
@@ -100,15 +193,27 @@ class SimpleChamber(octoprint.plugin.StartupPlugin,
 
 
 	def get_temperature(self):
-		sensor = Adafruit_DHT.DHT22 if int(self._settings.get(["sensor_type"])) == 22 else Adafruit_DHT.DHT11
-		sensor_pin = int(self._settings.get(["sensor_pin"]))
+		temperature = None
+		humidity = None
 		for i in range(0, 2):
-			humidity, temperature = Adafruit_DHT.read(sensor, sensor_pin, self.platform)
-			if humidity is not None and temperature is not None:
+			try:
+				if self.dht_driver == DHT_DRIVER_ADAFRUIT_DHT:
+					if not self.sensor:
+						return
+					temperature = self.sensor.temperature
+					humidity = self.sensor.humidity
+				elif self.dht_driver == DHT_DRIVER_DTOVERLAY:
+					if not self.dht_iio_path:
+						return
+					temperature = self.read_dht_iio_value('temp')
+					humidity = self.read_dht_iio_value('humidityrelative')
 				break
+			except RuntimeError as e:
+				self._logger.debug("Sensor reading error: %s" % str(e))
+				pass
 		# Skip if error (it's fine, the temperature just won't update in the graph)
-		self._logger.debug("H=%s T=%s sensor=%s sensor_pin=%s" % (humidity, temperature, sensor, sensor_pin))
-		if humidity is None or temperature is None:
+		self._logger.debug("H=%s T=%s" % (humidity, temperature))
+		if temperature is None:
 			return
 		# Ignore subtle drops in temperature.
 		# https://github.com/adafruit/Adafruit_Python_DHT/blob/master/Adafruit_DHT/common.py#L65
@@ -118,19 +223,15 @@ class SimpleChamber(octoprint.plugin.StartupPlugin,
 
 
 	def handle_fan(self):
-		if not self.last_dht_temp:
+		if not self.last_dht_temp or not self.pwm:
 			return
-		max_temp = float(self._settings.get(["max_temp"]))
 		prev_speed = self.fan_speed
-		self.fan_speed = self.get_fan_speed(self.last_dht_temp, max_temp)
-		if not self._settings.get(["fan_enabled"]):
-			self.pwm.ChangeDutyCycle(0)
-			return
+		self.fan_speed = self.get_fan_speed(self.last_dht_temp, self.max_temp)
 		if prev_speed != self.fan_speed:
-			self._logger.info("Temperature is %.2fC, target is %.2fC, fan is now at %d%%" % (self.last_dht_temp, max_temp, self.fan_speed))
+			self._logger.info("Temperature is %.2fC, target is %.2fC, fan is now at %d%%" % (self.last_dht_temp, self.max_temp, self.fan_speed))
 		if self.fan_speed > 0:
 			if (prev_speed < 50 and self.fan_speed < prev_speed) or (prev_speed == 0 and self.fan_speed < 50):
-				# Slowing down fan when alreayd at less than 50%, or starting from zero: "warm up" fan or it may stop
+				# Slowing down fan when already at less than 50%, or starting from zero: "warm up" fan or it may stop
 				self.pwm.ChangeDutyCycle(100)
 				time.sleep(0.5)
 		self.pwm.ChangeDutyCycle(self.fan_speed)
@@ -169,6 +270,7 @@ class SimpleChamber(octoprint.plugin.StartupPlugin,
 		return t
 
 
+__plugin_name__ = "OctoPrint Simple Chamber"
 __plugin_pythoncompat__ = ">=2.7,<4"
 __plugin_implementation__ = SimpleChamber()
 __plugin_hooks__ = {
